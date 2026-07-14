@@ -5,7 +5,7 @@
 // See `pd help` for the full command surface.
 
 // Reserved global flags, classified so values are typed predictably.
-const BOOL_FLAGS = new Set(['all', 'raw', 'compact', 'yes', 'allow-delete', 'dry-run', 'exact-match', 'help', 'h', 'full', 'all-owners', 'mine']);
+const BOOL_FLAGS = new Set(['all', 'raw', 'compact', 'yes', 'allow-delete', 'dry-run', 'exact-match', 'help', 'h', 'full', 'all-owners', 'mine', 'skip-endpoint-check']);
 const NUM_FLAGS = new Set(['limit', 'start', 'days']);
 const STR_FLAGS = new Set(['token', 'domain', 'cursor', 'sort', 'sort-by', 'sort-direction', 'output', 'item-types', 'fields', 'body-json']);
 const REPEAT_FLAGS = new Set(['field', 'query', 'str', 'num']); // k=v, repeatable
@@ -97,8 +97,79 @@ function resolveConfig(flags) {
   const dryRun = flags['dry-run'] === true || process.env.PD_DRY_RUN === '1';
   return { token, domain, base, baseOverride, allowDelete, dryRun };
 }
+// ---------- endpoint guard (data-residency) ----------
+// Restricts the CLI to run only when Claude Code targets an approved model endpoint,
+// so CRM data isn't processed by an unintended (e.g. non-EU) model backend.
+// OPT-IN: inactive unless PD_ALLOWED_ENDPOINTS is set (comma-separated allowlist).
+// Each entry is a provider token or a hostname (case-insensitive, '*' globs):
+//   bedrock | vertex | foundry | mantle | custom   provider active (any region)
+//   bedrock:eu-*  | vertex:eu | vertex:europe*      provider + region glob
+//   llm.eu.acme.internal  | *.eu.acme.internal      host of ANTHROPIC[_*]_BASE_URL
+// Bypass (local dev): --skip-endpoint-check or PD_SKIP_ENDPOINT_CHECK=1 — honored ONLY
+//   when PD_ALLOW_ENDPOINT_OVERRIDE=1, so a managed/pinned policy can't be bypassed.
+const ENDPOINT_PROVIDERS = ['bedrock', 'vertex', 'foundry', 'mantle', 'custom'];
+const hostOf = (u) => { try { return u ? new URL(u).host.toLowerCase() : null; } catch { return null; } };
+const globToRe = (g) => new RegExp('^' + g.split('*').map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$');
+
+// What model endpoint is Claude Code configured for? Reads the provider-selection env vars.
+function detectEndpoints() {
+  const e = process.env, out = [];
+  if (e.CLAUDE_CODE_USE_BEDROCK === '1') out.push({ provider: 'bedrock', region: (e.AWS_REGION || e.AWS_DEFAULT_REGION || '').toLowerCase(), host: hostOf(e.ANTHROPIC_BEDROCK_BASE_URL) });
+  if (e.CLAUDE_CODE_USE_VERTEX === '1')  out.push({ provider: 'vertex',  region: (e.CLOUD_ML_REGION || '').toLowerCase(), host: hostOf(e.ANTHROPIC_VERTEX_BASE_URL) });
+  if (e.CLAUDE_CODE_USE_FOUNDRY === '1') out.push({ provider: 'foundry', region: '', host: hostOf(e.ANTHROPIC_FOUNDRY_BASE_URL) });
+  if (e.CLAUDE_CODE_USE_MANTLE === '1')  out.push({ provider: 'mantle',  region: (e.AWS_REGION || '').toLowerCase(), host: hostOf(e.ANTHROPIC_BEDROCK_MANTLE_BASE_URL) });
+  if (e.ANTHROPIC_BASE_URL)              out.push({ provider: 'custom',  region: '', host: hostOf(e.ANTHROPIC_BASE_URL) });
+  return out;
+}
+// Does one allowlist entry admit any detected endpoint? Split on ':' only for provider heads
+// (so a `host:port` allowlist entry stays intact).
+function entryMatches(entry, eps) {
+  const colon = entry.indexOf(':');
+  const head = colon === -1 ? entry : entry.slice(0, colon);
+  if (ENDPOINT_PROVIDERS.includes(head)) {
+    const regionGlob = colon === -1 ? '' : entry.slice(colon + 1);
+    return eps.some(ep => ep.provider === head && (!regionGlob || (ep.region && globToRe(regionGlob).test(ep.region))));
+  }
+  const re = globToRe(entry);            // otherwise: host (glob allowed; matches with or without :port)
+  return eps.some(ep => ep.host && (re.test(ep.host) || re.test(ep.host.replace(/:\d+$/, ''))));
+}
+// Snapshot of the policy + current state (also drives `pd status`).
+function endpointPolicy() {
+  const raw = process.env.PD_ALLOWED_ENDPOINTS || '';
+  const allow = raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  const detected = detectEndpoints();
+  return {
+    active: allow.length > 0,
+    allow,
+    detected,
+    allowed: allow.length === 0 || allow.some(entry => entryMatches(entry, detected)),
+    overrideEnabled: process.env.PD_ALLOW_ENDPOINT_OVERRIDE === '1',
+  };
+}
+const describeEndpoints = (eps) => eps.length
+  ? eps.map(ep => ep.host ? `${ep.provider}(${ep.host})` : ep.region ? `${ep.provider}:${ep.region}` : ep.provider).join(', ')
+  : 'default Anthropic API (no custom endpoint env detected)';
+
+// Hard-fail unless the active endpoint is allowlisted. No-op when the guard is not opted in.
+function assertApprovedEndpoint(flags) {
+  const pol = endpointPolicy();
+  if (!pol.active) return;                                    // guard opt-in via PD_ALLOWED_ENDPOINTS
+  const wantSkip = flags['skip-endpoint-check'] === true || process.env.PD_SKIP_ENDPOINT_CHECK === '1';
+  if (wantSkip) {
+    if (pol.overrideEnabled) { process.stderr.write('pd: endpoint check skipped (PD_ALLOW_ENDPOINT_OVERRIDE=1)\n'); return; }
+    process.stderr.write('pd: skip-endpoint-check ignored — set PD_ALLOW_ENDPOINT_OVERRIDE=1 to permit a bypass\n');
+  }
+  if (pol.allowed) return;
+  fail('refusing to run — Claude Code endpoint is not in PD_ALLOWED_ENDPOINTS (data-residency guard).\n' +
+       `  allowed:  ${pol.allow.join(', ')}\n` +
+       `  detected: ${describeEndpoints(pol.detected)}\n` +
+       '  Fix: configure an approved endpoint (Bedrock/Vertex/EU gateway), or for local dev\n' +
+       '  set PD_ALLOW_ENDPOINT_OVERRIDE=1 and pass --skip-endpoint-check.');
+}
+
 function config(flags) {
   const c = resolveConfig(flags);
+  assertApprovedEndpoint(flags);
   if (!c.token) fail('Missing API token. Set PIPEDRIVE_API_TOKEN or pass --token.');
   if (!c.base) fail('Missing domain. Set PIPEDRIVE_DOMAIN (your company subdomain) or pass --domain.');
   return c;
@@ -265,6 +336,12 @@ async function special(cfg, group, action, args) {
         dry_run: c.dryRun,
         allow_delete: c.allowDelete,
       };
+      { // data-residency guard state
+        const pol = endpointPolicy();
+        info.endpoint = pol.active
+          ? { guard: pol.allowed ? 'ok' : 'BLOCKED', allowed: pol.allow, detected: describeEndpoints(pol.detected), override_enabled: pol.overrideEnabled }
+          : { guard: 'off', note: 'set PD_ALLOWED_ENDPOINTS to restrict which model endpoint may run this CLI', detected: describeEndpoints(pol.detected) };
+      }
       if (!c.token || !c.base) {
         info.auth = { ok: false, error: `missing ${[!c.token && 'token', !c.base && 'domain'].filter(Boolean).join(' and ')}` };
       } else if (c.dryRun) {
@@ -493,6 +570,15 @@ Auth (env or flags):
   PIPEDRIVE_API_TOKEN   personal API token   (or --token)
   PIPEDRIVE_DOMAIN      company subdomain    (or --domain)   e.g. acme  ->  acme.pipedrive.com
   PIPEDRIVE_ALLOW_DELETE=1  enable deletes   (deletes also need --yes)
+
+Data-residency guard (opt-in; restricts which model endpoint may run this CLI):
+  PD_ALLOWED_ENDPOINTS   comma allowlist; unset = guard off. Entries are providers or hosts:
+                           bedrock  vertex  foundry  mantle  custom   (any region)
+                           bedrock:eu-*  vertex:eu                     (region glob)
+                           llm.eu.acme.internal  *.eu.acme.internal    (ANTHROPIC*_BASE_URL host)
+  PD_ALLOW_ENDPOINT_OVERRIDE=1  permit a local bypass via --skip-endpoint-check
+                           (leave unset in managed settings so policy can't be bypassed)
+  See 'pd status' for the current guard verdict and detected endpoint.
 
 Entities (list|get <id>|search <term>|add|update <id>|delete <id>):
   deals persons organizations activities notes leads products pipelines stages users files

@@ -88,6 +88,41 @@ These are read-only and scoped to you by default (add `--all-owners` for the who
 - **Custom fields** show up as cryptic keys. Run `pd fields deal` (or `person`, `organization`,
   …) to see friendly names and the keys to use.
 
+## Restricting to an approved model endpoint (data residency)
+
+If you only want the CLI to run when Claude Code is pointed at an approved model backend — AWS
+Bedrock, Google Vertex, an EU-hosted gateway, etc. — set an allowlist. When
+`PD_ALLOWED_ENDPOINTS` is **unset the guard is off** (default behaviour is unchanged); set it to
+turn the guard on:
+
+```bash
+# only run when Claude Code targets Bedrock in an EU region, or an EU gateway host
+export PD_ALLOWED_ENDPOINTS="bedrock:eu-*,vertex:eu,*.eu.acme.internal"
+```
+
+Each comma-separated entry is a **provider token** (`bedrock`, `vertex`, `foundry`, `mantle`,
+`custom`), optionally with a `:region-glob` (`bedrock:eu-*`), or a **host** matched against
+`ANTHROPIC_BASE_URL` / `ANTHROPIC_BEDROCK_BASE_URL` / `ANTHROPIC_VERTEX_BASE_URL` (globs and
+`:port` allowed). The guard reads the provider env vars Claude Code exports
+(`CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION`, `CLOUD_ML_REGION`, …), which propagate into the CLI
+subprocess. On a non-matching endpoint the command refuses to run before any Pipedrive call.
+
+- Run `pd status` to see the current verdict (`ok` / `BLOCKED` / `off`) and the detected endpoint.
+- **Local-dev bypass:** `--skip-endpoint-check` (or `PD_SKIP_ENDPOINT_CHECK=1`) is honored **only**
+  when `PD_ALLOW_ENDPOINT_OVERRIDE=1`. Pin `PD_ALLOWED_ENDPOINTS` in managed/enterprise
+  `settings.json` and leave the override unset so it can't be bypassed from the session.
+
+> **Disclaimer — what this guard is and isn't.** It reads *configuration* (the endpoint env vars
+> Claude Code exports), **not** attested session state, and there is no cryptographic proof of
+> which model backend actually served a request. It therefore stops **misconfiguration and casual
+> misuse** — e.g. silently falling back to the default Anthropic API — but it does **not** stop a
+> determined user who controls their own environment (anyone who can set `CLAUDE_CODE_USE_BEDROCK=1`
+> or point `ANTHROPIC_BASE_URL` anywhere can satisfy the check without a real approved backend
+> behind it). Treat it as a compliance guardrail, not a security boundary. For stronger,
+> fleet-wide enforcement, pin the allowlist in **managed** settings (highest precedence, users
+> can't override) and/or pair it with a `PreToolUse` hook — and enforce data residency at the
+> gateway/network layer, which is the only place it can be guaranteed.
+
 ## Anything not covered?
 
 The raw escape hatch reaches any Pipedrive endpoint:
