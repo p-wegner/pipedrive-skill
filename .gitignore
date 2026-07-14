@@ -1,0 +1,13 @@
+# Env / secrets
+.env
+.env.*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Node (none expected — zero-dependency — but just in case)
+node_modules/
