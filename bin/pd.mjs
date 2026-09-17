@@ -105,9 +105,13 @@ function resolveConfig(flags) {
 //   bedrock | vertex | foundry | mantle | custom   provider active (any region)
 //   bedrock:eu-*  | vertex:eu | vertex:europe*      provider + region glob
 //   llm.eu.acme.internal  | *.eu.acme.internal      host of ANTHROPIC[_*]_BASE_URL
+//   residency:eu                                     CLAUDE_MODEL_RESIDENCY names that region
+// `residency:` is for a gateway that serves several regions under ONE host, where the host
+//   proves nothing. A profile writer that has checked every model the session can reach
+//   exports CLAUDE_MODEL_RESIDENCY=EU next to the base URL; this entry matches that.
 // Bypass (local dev): --skip-endpoint-check or PD_SKIP_ENDPOINT_CHECK=1 — honored ONLY
 //   when PD_ALLOW_ENDPOINT_OVERRIDE=1, so a managed/pinned policy can't be bypassed.
-const ENDPOINT_PROVIDERS = ['bedrock', 'vertex', 'foundry', 'mantle', 'custom'];
+const ENDPOINT_PROVIDERS = ['bedrock', 'vertex', 'foundry', 'mantle', 'custom', 'residency'];
 const hostOf = (u) => { try { return u ? new URL(u).host.toLowerCase() : null; } catch { return null; } };
 const globToRe = (g) => new RegExp('^' + g.split('*').map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$');
 
@@ -119,6 +123,11 @@ function detectEndpoints() {
   if (e.CLAUDE_CODE_USE_FOUNDRY === '1') out.push({ provider: 'foundry', region: '', host: hostOf(e.ANTHROPIC_FOUNDRY_BASE_URL) });
   if (e.CLAUDE_CODE_USE_MANTLE === '1')  out.push({ provider: 'mantle',  region: (e.AWS_REGION || '').toLowerCase(), host: hostOf(e.ANTHROPIC_BEDROCK_MANTLE_BASE_URL) });
   if (e.ANTHROPIC_BASE_URL)              out.push({ provider: 'custom',  region: '', host: hostOf(e.ANTHROPIC_BASE_URL) });
+  // The residency attestation is a pseudo-endpoint: `residency:eu` matches it via the same
+  // provider+region path as `bedrock:eu-*`.
+  for (const region of String(e.CLAUDE_MODEL_RESIDENCY || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean)) {
+    out.push({ provider: 'residency', region, host: null });
+  }
   return out;
 }
 // Does one allowlist entry admit any detected endpoint? Split on ':' only for provider heads
@@ -576,6 +585,7 @@ Data-residency guard (opt-in; restricts which model endpoint may run this CLI):
                            bedrock  vertex  foundry  mantle  custom   (any region)
                            bedrock:eu-*  vertex:eu                     (region glob)
                            llm.eu.acme.internal  *.eu.acme.internal    (ANTHROPIC*_BASE_URL host)
+                           residency:eu                                (CLAUDE_MODEL_RESIDENCY names it)
   PD_ALLOW_ENDPOINT_OVERRIDE=1  permit a local bypass via --skip-endpoint-check
                            (leave unset in managed settings so policy can't be bypassed)
   See 'pd status' for the current guard verdict and detected endpoint.

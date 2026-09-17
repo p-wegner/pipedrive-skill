@@ -56,7 +56,8 @@ Read-only views: `my deals`, `my activities`, `overdue`, `upcoming`, `stale`, `r
   `<entity> delete` and `api DELETE`. Changes are live to the whole team: delete only when
   asked, and echo the target first.
 - **Data-residency guard (opt-in).** Set `PD_ALLOWED_ENDPOINTS` (comma allowlist of provider
-  tokens like `bedrock:eu-*`, `vertex:eu`, or hosts) to make the CLI refuse to run unless Claude
+  tokens like `bedrock:eu-*`, `vertex:eu`, hosts, or `residency:eu` for a multi-region gateway
+  whose session exports `CLAUDE_MODEL_RESIDENCY`) to make the CLI refuse to run unless Claude
   Code targets an approved model endpoint. Unset = off. Local bypass `--skip-endpoint-check`
   works only with `PD_ALLOW_ENDPOINT_OVERRIDE=1`. `pd status` reports the verdict. See README →
   "Restricting to an approved model endpoint".

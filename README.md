@@ -107,6 +107,14 @@ Each comma-separated entry is a **provider token** (`bedrock`, `vertex`, `foundr
 (`CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION`, `CLOUD_ML_REGION`, …), which propagate into the CLI
 subprocess. On a non-matching endpoint the command refuses to run before any Pipedrive call.
 
+A fourth entry type, **`residency:<region>`** (e.g. `residency:eu`), is for a gateway that serves
+several regions under **one** host, where the host alone proves nothing. It matches when the
+session's environment carries `CLAUDE_MODEL_RESIDENCY=<region>` (comma list allowed). That
+variable is meant to be written by whatever configures the session **after** checking that every
+model the session can reach is served in that region (a profile writer for the gateway, for
+example); a person can of course set it by hand, which is the same caveat as for every other
+entry, see the disclaimer below.
+
 - Run `pd status` to see the current verdict (`ok` / `BLOCKED` / `off`) and the detected endpoint.
 - **Local-dev bypass:** `--skip-endpoint-check` (or `PD_SKIP_ENDPOINT_CHECK=1`) is honored **only**
   when `PD_ALLOW_ENDPOINT_OVERRIDE=1`. Pin `PD_ALLOWED_ENDPOINTS` in managed/enterprise
